@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -62,6 +63,7 @@ from texbook.gui.settings import (  # noqa: E402
     GuiConversionMode,
     GuiConversionSettings,
     GuiOutputKind,
+    default_gui_log_file_path,
     validate_gui_settings,
 )
 from texbook.gui.theme import build_fluent_stylesheet  # noqa: E402
@@ -302,7 +304,9 @@ def test_main_window_about_action_opens_about_dialog(monkeypatch):
     window = MainWindow()
 
     help_menu_action = window.menuBar().actions()[1]
-    about_action = help_menu_action.menu().actions()[0]
+    help_actions = help_menu_action.menu().actions()
+    assert [action.text() for action in help_actions] == ["输出日志", "关于 TeXBook"]
+    about_action = help_actions[1]
 
     assert about_action.isEnabled() is True
     assert about_action.text() == "关于 TeXBook"
@@ -330,6 +334,52 @@ def test_main_window_about_action_opens_about_dialog(monkeypatch):
     assert about_dialogs[0].parent() is window
 
     window.close()
+    app.quit()
+
+
+def test_main_window_output_log_action_exports_session_log(tmp_path):
+    app = create_application(["texbook-gui-test"])
+    window = MainWindow()
+    panel = window.centralWidget()
+    assert isinstance(panel, ConversionMainPanel)
+    export_path = tmp_path / "logs" / "session.jsonl"
+
+    assert panel.findChild(QLineEdit, "logFilePathField").text() == default_gui_log_file_path()
+    assert not export_path.exists()
+
+    panel.set_path_memory(GuiPathMemory(last_log_file_path=str(export_path)))
+    panel._diagnostic_log.record("manual_event", message="hello")
+    window._export_log_action.trigger()
+
+    assert export_path.exists()
+    events = [json.loads(line) for line in export_path.read_text(encoding="utf-8").splitlines()]
+    assert any(event["kind"] == "manual_event" and event["message"] == "hello" for event in events)
+    assert any(event["kind"] == "log_exported" and event["path"] == str(export_path) for event in events)
+    assert window.statusBar().currentMessage() == f"日志已输出：{export_path}"
+
+    window.close()
+    app.quit()
+
+
+def test_conversion_panel_log_path_browse_uses_save_file_dialog(tmp_path, monkeypatch):
+    app = create_application(["texbook-gui-test"])
+    panel = ConversionMainPanel()
+    selected = tmp_path / "logs" / "texbook.jsonl"
+    captured = []
+
+    monkeypatch.setattr(
+        "texbook.gui.main_panel.QFileDialog.getSaveFileName",
+        lambda *args, **kwargs: captured.append(args[2]) or (str(selected), ""),
+    )
+
+    panel.findChild(QToolButton, "logFileBrowseButton").click()
+
+    assert captured == [default_gui_log_file_path()]
+    assert panel.findChild(QLineEdit, "logFilePathField").text() == str(selected)
+    assert panel.current_path_memory().last_log_file_path == str(selected)
+    assert not selected.exists()
+
+    panel.close()
     app.quit()
 
 
@@ -1099,6 +1149,7 @@ def test_gui_settings_store_round_trips_persistent_settings(tmp_path):
             last_input_directory=r"C:\books",
             last_output_directory=r"D:\tex-output",
             last_cache_directory=r"D:\tex-cache",
+            last_log_file_path=r"D:\tex-logs\texbook.jsonl",
         ),
     )
 
@@ -1120,6 +1171,7 @@ def test_gui_settings_store_round_trips_persistent_settings(tmp_path):
     assert loaded.path_memory.last_input_directory == r"C:\books"
     assert loaded.path_memory.last_output_directory == r"D:\tex-output"
     assert loaded.path_memory.last_cache_directory == r"D:\tex-cache"
+    assert loaded.path_memory.last_log_file_path == r"D:\tex-logs\texbook.jsonl"
 
 
 def test_gui_settings_store_ignores_persisted_prompt_preset(tmp_path):
@@ -1274,6 +1326,7 @@ def test_conversion_panel_add_task_clears_input_and_output_paths(monkeypatch):
 
     panel.set_input_selection(GuiInputSelection.from_single_file(r"C:\books\lecture.pdf"))
     panel.set_output_directory(r"D:\tex-output\lecture.tex")
+    panel.findChild(QLineEdit, "pagesField").setText("1-2")
     _fill_required_task_fields(panel)
 
     assert panel.current_path_memory().last_input_directory == r"C:\books"
@@ -1283,6 +1336,7 @@ def test_conversion_panel_add_task_clears_input_and_output_paths(monkeypatch):
 
     assert panel.findChild(QLineEdit, "pdfInputField").text() == ""
     assert panel.findChild(QLineEdit, "outputDirectoryField").text() == ""
+    assert panel.findChild(QLineEdit, "pagesField").text() == ""
     assert panel.selection_state.input_selection.paths == ()
     assert panel.selection_state.output_directory == ""
     assert panel.current_path_memory().last_input_directory == r"C:\books"
@@ -2165,6 +2219,10 @@ def test_conversion_panel_start_button_runs_fake_executor(monkeypatch):
 
     assert panel.findChild(QLabel, f"taskStatusBadge_{first_id}").text() == "完成"
     assert panel.findChild(QLabel, f"taskResultLabel_{first_id}").text() == "完成结果：out/a.tex"
+    second_id = panel.task_view_states()[1].task_id
+    executor.task_failed.emit(second_id, "LLM failed")
+    assert panel.findChild(QLabel, f"taskStatusBadge_{second_id}").text() == "失败"
+    assert any(event["kind"] == "task_failed" for event in panel._diagnostic_log.events)
 
     executor.all_finished.emit()
     assert panel._executor is None
@@ -2206,6 +2264,10 @@ def test_conversion_panel_cancels_pending_and_running_tasks(monkeypatch):
     executor.task_canceled.emit(second_id)
     assert panel.findChild(QLabel, f"taskStatusBadge_{second_id}").text() == "已取消"
     assert panel.findChild(QPushButton, "startButton").isEnabled() is False
+    log_kinds = [event["kind"] for event in panel._diagnostic_log.events]
+    assert "task_cancel_requested" in log_kinds
+    assert "task_canceling" in log_kinds
+    assert "task_canceled" in log_kinds
 
     window.close()
     app.quit()

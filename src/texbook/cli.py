@@ -13,6 +13,7 @@ import click
 import typer
 
 from .convert import LatexProjectResult
+from .diagnostics import DiagnosticLog
 from .document_class import DocumentClassMode
 from .extract.base import DocumentExtractionError, ImageRenderOptions
 from .llm.cache import ChunkCacheOptions
@@ -86,10 +87,13 @@ class _CliSchedulerOptions:
 
 
 class _CliProgressReporter:
-    def __init__(self):
+    def __init__(self, diagnostic_log: DiagnosticLog | None = None):
         self._lock = Lock()
+        self._diagnostic_log = diagnostic_log
 
     def __call__(self, event: ProgressEvent) -> None:
+        if self._diagnostic_log is not None:
+            self._diagnostic_log.record_progress(event)
         message = _format_progress_event(event)
         if not message:
             return
@@ -483,6 +487,24 @@ def _format_conversion_failure(path: Path, exc: Exception) -> str:
     return f"Failed to convert {path.name}: {_describe_cli_error(exc)}"
 
 
+def _record_command_failure(
+    diagnostic_log: DiagnosticLog | None,
+    *,
+    command: str,
+    path: Path,
+    exc: Exception,
+) -> None:
+    if diagnostic_log is None:
+        return
+    diagnostic_log.record(
+        "command_failed",
+        command=command,
+        pdf=path,
+        error=_describe_cli_error(exc),
+        exception_type=exc.__class__.__name__,
+    )
+
+
 def _describe_cli_error(exc: Exception) -> str:
     message = str(exc).strip()
     if isinstance(exc, DocumentExtractionError):
@@ -535,6 +557,7 @@ def _run_batch_job(
     project: bool,
     page_selection: list[int] | None,
     force: bool,
+    diagnostic_log: DiagnosticLog | None = None,
 ) -> _BatchJobResult:
     converter = build_converter()
     if project:
@@ -544,6 +567,14 @@ def _run_batch_job(
             job.target,
             force=force,
         )
+        if diagnostic_log is not None:
+            diagnostic_log.record(
+                "write_completed",
+                pdf=job.pdf.name,
+                path=str(entrypoint),
+                output_kind="project",
+                target=str(job.target),
+            )
         return _BatchJobResult(
             pdf=job.pdf,
             entrypoint=entrypoint,
@@ -552,6 +583,13 @@ def _run_batch_job(
 
     result = converter.convert(job.pdf, pages=page_selection)
     job.target.write_text(result.latex, encoding="utf-8")
+    if diagnostic_log is not None:
+        diagnostic_log.record(
+            "write_completed",
+            pdf=job.pdf.name,
+            path=str(job.target),
+            output_kind="tex_file",
+        )
     return _BatchJobResult(
         pdf=job.pdf,
         notes=tuple(result.notes),
@@ -849,60 +887,73 @@ def extract(
         "--clear-cache",
         help="Clear matching chunk cache before conversion",
     ),
+    log_file: Optional[Path] = typer.Option(
+        None,
+        "--log-file",
+        help="Write a live JSONL diagnostic log to the given file",
+    ),
     extra_prompt: Optional[str] = typer.Option(
         None, "--extra-prompt", help="额外的系统提示文字（追加到默认要求之后）"
     ),
 ):
     """Extract content from a single PDF and convert to LaTeX."""
-    pdf_path = _resolve_existing_path(pdf_path)
-    if not pdf_path.is_file():
-        raise typer.BadParameter(f"Not a file: {pdf_path}")
-    if project and output is None:
-        raise typer.BadParameter("--project 需要同时指定 -o/--output 项目目录。")
-    if force and not project:
-        raise typer.BadParameter("--force 只能与 --project 一起使用。")
-    if not project and structure != StructureOption.auto:
-        raise typer.BadParameter("--structure 只能与 --project 一起使用。")
-
-    page_selection = _parse_pages(pages)
-    progress_reporter = _CliProgressReporter()
-    converter = _build_converter(
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        temperature=temperature,
-        timeout=timeout,
-        max_tokens=max_tokens,
-        chunk_pages=chunk_pages,
-        image_dpi=image_dpi,
-        image_dpi_min=image_dpi_min,
-        image_dpi_max=image_dpi_max,
-        image_format=image_format,
-        jpeg_quality=jpeg_quality,
-        prefetch_chunks=prefetch_chunks,
-        cache_dir=cache_dir,
-        no_cache=no_cache,
-        clear_cache=clear_cache,
-        extra_prompt=extra_prompt,
-        preset=preset,
-        title_source=title_source,
-        manual_title=title,
-        show_date=show_date,
-        document_class=document_class,
-        beamer_box_style=beamer_box_style,
-        ctex_font_profile=ctex_font_profile,
-        beamer_title_page=beamer_title_page,
-        structure=structure,
-        structure_chunk_pages=structure_chunk_pages,
-        structure_max_pages=structure_max_pages,
-        progress_reporter=progress_reporter,
-        llm_retries=llm_retries,
-        llm_retry_initial_delay=llm_retry_initial_delay,
-        llm_retry_max_delay=llm_retry_max_delay,
-        llm_max_concurrency=llm_max_concurrency,
-        llm_min_request_interval=llm_min_request_interval,
-    )
+    diagnostic_log = DiagnosticLog(log_file) if log_file is not None else None
     try:
+        pdf_path = _resolve_existing_path(pdf_path)
+        if not pdf_path.is_file():
+            raise typer.BadParameter(f"Not a file: {pdf_path}")
+        if project and output is None:
+            raise typer.BadParameter("--project 需要同时指定 -o/--output 项目目录。")
+        if force and not project:
+            raise typer.BadParameter("--force 只能与 --project 一起使用。")
+        if not project and structure != StructureOption.auto:
+            raise typer.BadParameter("--structure 只能与 --project 一起使用。")
+
+        page_selection = _parse_pages(pages)
+        if diagnostic_log is not None:
+            diagnostic_log.record(
+                "command_started",
+                command="extract",
+                pdf=pdf_path,
+                project=project,
+            )
+        progress_reporter = _CliProgressReporter(diagnostic_log)
+        converter = _build_converter(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=temperature,
+            timeout=timeout,
+            max_tokens=max_tokens,
+            chunk_pages=chunk_pages,
+            image_dpi=image_dpi,
+            image_dpi_min=image_dpi_min,
+            image_dpi_max=image_dpi_max,
+            image_format=image_format,
+            jpeg_quality=jpeg_quality,
+            prefetch_chunks=prefetch_chunks,
+            cache_dir=cache_dir,
+            no_cache=no_cache,
+            clear_cache=clear_cache,
+            extra_prompt=extra_prompt,
+            preset=preset,
+            title_source=title_source,
+            manual_title=title,
+            show_date=show_date,
+            document_class=document_class,
+            beamer_box_style=beamer_box_style,
+            ctex_font_profile=ctex_font_profile,
+            beamer_title_page=beamer_title_page,
+            structure=structure,
+            structure_chunk_pages=structure_chunk_pages,
+            structure_max_pages=structure_max_pages,
+            progress_reporter=progress_reporter,
+            llm_retries=llm_retries,
+            llm_retry_initial_delay=llm_retry_initial_delay,
+            llm_retry_max_delay=llm_retry_max_delay,
+            llm_max_concurrency=llm_max_concurrency,
+            llm_min_request_interval=llm_min_request_interval,
+        )
         if project:
             assert output is not None
             project_dir = _resolve_project_output_dir(output)
@@ -913,6 +964,21 @@ def extract(
                 project_dir,
                 force=force,
             )
+            if diagnostic_log is not None:
+                diagnostic_log.record(
+                    "write_completed",
+                    pdf=pdf_path.name,
+                    path=str(entrypoint),
+                    output_kind="project",
+                    target=str(project_dir),
+                )
+                diagnostic_log.record(
+                    "command_completed",
+                    command="extract",
+                    pdf=pdf_path,
+                    target=entrypoint,
+                    output_kind="project",
+                )
             typer.echo(f"项目目录：{project_dir}", err=True)
             typer.echo(f"入口文件：{entrypoint}", err=True)
             notes = project_result.notes
@@ -923,14 +989,38 @@ def extract(
                 output = _resolve_tex_output(output)
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_text(latex, encoding="utf-8")
+                if diagnostic_log is not None:
+                    diagnostic_log.record(
+                        "write_completed",
+                        pdf=pdf_path.name,
+                        path=str(output),
+                        output_kind="tex_file",
+                    )
+                    diagnostic_log.record(
+                        "command_completed",
+                        command="extract",
+                        pdf=pdf_path,
+                        target=output,
+                        output_kind="tex_file",
+                    )
                 typer.echo(f"Written to {output}", err=True)
             else:
+                if diagnostic_log is not None:
+                    diagnostic_log.record(
+                        "command_completed",
+                        command="extract",
+                        pdf=pdf_path,
+                        output_kind="stdout",
+                    )
                 typer.echo(latex)
             notes = result.notes
 
         for note in notes:
             typer.echo(f"Note: {note}", err=True)
     except Exception as exc:
+        _record_command_failure(diagnostic_log, command="extract", path=pdf_path, exc=exc)
+        if isinstance(exc, (typer.BadParameter, click.ClickException, typer.Exit)):
+            raise
         raise click.ClickException(_format_conversion_failure(pdf_path, exc)) from exc
 
 
@@ -1116,92 +1206,17 @@ def batch(
         "--clear-cache",
         help="Clear matching chunk cache before conversion",
     ),
+    log_file: Optional[Path] = typer.Option(
+        None,
+        "--log-file",
+        help="Write a live JSONL diagnostic log to the given file",
+    ),
     extra_prompt: Optional[str] = typer.Option(
         None, "--extra-prompt", help="额外的系统提示文字（追加到默认要求之后）"
     ),
 ):
     """Extract all matching PDFs in a directory to LaTeX outputs."""
-    directory = _resolve_existing_path(directory)
-    if not directory.is_dir():
-        raise typer.BadParameter(f"Not a directory: {directory}")
-    if force and not project:
-        raise typer.BadParameter("--force 只能与 --project 一起使用。")
-    if not project and structure != StructureOption.auto:
-        raise typer.BadParameter("--structure 只能与 --project 一起使用。")
-    if batch_workers <= 0:
-        raise typer.BadParameter("--batch-workers must be positive.")
-
-    output_dir = _resolve_output_dir(output_dir)
-    page_selection = _parse_pages(pages)
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        raise click.ClickException(
-            f"Cannot create output directory {output_dir}: {_describe_cli_error(exc)}"
-        ) from exc
-
-    pdf_files = sorted(Path(directory).glob(pattern))
-    if not pdf_files:
-        typer.echo(f"No files found matching '{pattern}' in {directory}", err=True)
-        raise typer.Exit(1)
-
-    jobs = [
-        _BatchJob(
-            pdf=pdf,
-            target=(output_dir / pdf.stem if project else output_dir / f"{pdf.stem}.tex"),
-        )
-        for pdf in pdf_files
-    ]
-    _validate_batch_targets(jobs, project=project, force=force)
-
-    progress_reporter = _CliProgressReporter()
-    shared_scheduler = _build_llm_scheduler(
-        llm_retries=llm_retries,
-        llm_retry_initial_delay=llm_retry_initial_delay,
-        llm_retry_max_delay=llm_retry_max_delay,
-        llm_max_concurrency=llm_max_concurrency,
-        llm_min_request_interval=llm_min_request_interval,
-        progress_reporter=progress_reporter,
-    )
-
-    def build_converter() -> LLMPdfConverter:
-        return _build_converter(
-            model=model,
-            api_key=api_key,
-            base_url=base_url,
-            temperature=temperature,
-            timeout=timeout,
-            max_tokens=max_tokens,
-            chunk_pages=chunk_pages,
-            image_dpi=image_dpi,
-            image_dpi_min=image_dpi_min,
-            image_dpi_max=image_dpi_max,
-            image_format=image_format,
-            jpeg_quality=jpeg_quality,
-            prefetch_chunks=prefetch_chunks,
-            cache_dir=cache_dir,
-            no_cache=no_cache,
-            clear_cache=clear_cache,
-            extra_prompt=extra_prompt,
-            preset=preset,
-            title_source=title_source,
-            show_date=show_date,
-            document_class=document_class,
-            beamer_box_style=beamer_box_style,
-            ctex_font_profile=ctex_font_profile,
-            beamer_title_page=beamer_title_page,
-            structure=structure,
-            structure_chunk_pages=structure_chunk_pages,
-            structure_max_pages=structure_max_pages,
-            scheduler=shared_scheduler,
-            progress_reporter=progress_reporter,
-            llm_retries=llm_retries,
-            llm_retry_initial_delay=llm_retry_initial_delay,
-            llm_retry_max_delay=llm_retry_max_delay,
-            llm_max_concurrency=llm_max_concurrency,
-            llm_min_request_interval=llm_min_request_interval,
-        )
-
+    diagnostic_log = DiagnosticLog(log_file) if log_file is not None else None
     failures: list[tuple[Path, str]] = []
     written_count = 0
 
@@ -1232,31 +1247,106 @@ def batch(
             )
         )
 
-    if batch_workers == 1:
-        for job in jobs:
-            progress_reporter(
-                ProgressEvent(
-                    kind="batch_item_started",
-                    operation="batch",
-                    label=job.pdf.name,
-                )
+    try:
+        directory = _resolve_existing_path(directory)
+        if not directory.is_dir():
+            raise typer.BadParameter(f"Not a directory: {directory}")
+        if force and not project:
+            raise typer.BadParameter("--force 只能与 --project 一起使用。")
+        if not project and structure != StructureOption.auto:
+            raise typer.BadParameter("--structure 只能与 --project 一起使用。")
+        if batch_workers <= 0:
+            raise typer.BadParameter("--batch-workers must be positive.")
+
+        output_dir = _resolve_output_dir(output_dir)
+        page_selection = _parse_pages(pages)
+        if diagnostic_log is not None:
+            diagnostic_log.record(
+                "command_started",
+                command="batch",
+                pdf=directory,
+                project=project,
             )
-            try:
-                handle_success(
-                    _run_batch_job(
-                        job=job,
-                        build_converter=build_converter,
-                        project=project,
-                        page_selection=page_selection,
-                        force=force,
-                    )
-                )
-            except Exception as exc:
-                handle_failure(job.pdf, exc)
-                continue
-    else:
-        with ThreadPoolExecutor(max_workers=batch_workers) as executor:
-            future_jobs = {}
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise click.ClickException(
+                f"Cannot create output directory {output_dir}: {_describe_cli_error(exc)}"
+            ) from exc
+
+        pdf_files = sorted(Path(directory).glob(pattern))
+        if not pdf_files:
+            typer.echo(f"No files found matching '{pattern}' in {directory}", err=True)
+            raise typer.Exit(1)
+
+        jobs = [
+            _BatchJob(
+                pdf=pdf,
+                target=(output_dir / pdf.stem if project else output_dir / f"{pdf.stem}.tex"),
+            )
+            for pdf in pdf_files
+        ]
+        _validate_batch_targets(jobs, project=project, force=force)
+
+        progress_reporter = _CliProgressReporter(diagnostic_log)
+        shared_scheduler = _build_llm_scheduler(
+            llm_retries=llm_retries,
+            llm_retry_initial_delay=llm_retry_initial_delay,
+            llm_retry_max_delay=llm_retry_max_delay,
+            llm_max_concurrency=llm_max_concurrency,
+            llm_min_request_interval=llm_min_request_interval,
+            progress_reporter=progress_reporter,
+        )
+
+        def build_converter() -> LLMPdfConverter:
+            return _build_converter(
+                model=model,
+                api_key=api_key,
+                base_url=base_url,
+                temperature=temperature,
+                timeout=timeout,
+                max_tokens=max_tokens,
+                chunk_pages=chunk_pages,
+                image_dpi=image_dpi,
+                image_dpi_min=image_dpi_min,
+                image_dpi_max=image_dpi_max,
+                image_format=image_format,
+                jpeg_quality=jpeg_quality,
+                prefetch_chunks=prefetch_chunks,
+                cache_dir=cache_dir,
+                no_cache=no_cache,
+                clear_cache=clear_cache,
+                extra_prompt=extra_prompt,
+                preset=preset,
+                title_source=title_source,
+                show_date=show_date,
+                document_class=document_class,
+                beamer_box_style=beamer_box_style,
+                ctex_font_profile=ctex_font_profile,
+                beamer_title_page=beamer_title_page,
+                structure=structure,
+                structure_chunk_pages=structure_chunk_pages,
+                structure_max_pages=structure_max_pages,
+                scheduler=shared_scheduler,
+                progress_reporter=progress_reporter,
+                llm_retries=llm_retries,
+                llm_retry_initial_delay=llm_retry_initial_delay,
+                llm_retry_max_delay=llm_retry_max_delay,
+                llm_max_concurrency=llm_max_concurrency,
+                llm_min_request_interval=llm_min_request_interval,
+            )
+
+        if diagnostic_log is not None:
+            diagnostic_log.record(
+                "batch_planned",
+                command="batch",
+                pdf=directory,
+                target=output_dir,
+                project=project,
+                jobs=[str(job.pdf) for job in jobs],
+            )
+
+        if batch_workers == 1:
             for job in jobs:
                 progress_reporter(
                     ProgressEvent(
@@ -1265,35 +1355,90 @@ def batch(
                         label=job.pdf.name,
                     )
                 )
-                future = executor.submit(
-                    _run_batch_job,
-                    job=job,
-                    build_converter=build_converter,
-                    project=project,
-                    page_selection=page_selection,
-                    force=force,
-                )
-                future_jobs[future] = job
-
-            for future in as_completed(future_jobs):
-                job = future_jobs[future]
                 try:
-                    handle_success(future.result())
+                    handle_success(
+                        _run_batch_job(
+                            job=job,
+                            build_converter=build_converter,
+                            project=project,
+                            page_selection=page_selection,
+                            force=force,
+                            diagnostic_log=diagnostic_log,
+                        )
+                    )
                 except Exception as exc:
                     handle_failure(job.pdf, exc)
+                    continue
+        else:
+            with ThreadPoolExecutor(max_workers=batch_workers) as executor:
+                future_jobs = {}
+                for job in jobs:
+                    progress_reporter(
+                        ProgressEvent(
+                            kind="batch_item_started",
+                            operation="batch",
+                            label=job.pdf.name,
+                        )
+                    )
+                    future = executor.submit(
+                        _run_batch_job,
+                        job=job,
+                        build_converter=build_converter,
+                        project=project,
+                        page_selection=page_selection,
+                        force=force,
+                        diagnostic_log=diagnostic_log,
+                    )
+                    future_jobs[future] = job
 
-    if failures:
-        typer.echo(
-            f"Done with failures. {written_count} files written to {output_dir}; "
-            f"{len(failures)} failed.",
-            err=True,
-        )
-        typer.echo("Failures:", err=True)
-        for failed_file, reason in failures:
-            typer.echo(f"- {failed_file.name}: {reason}", err=True)
-        raise typer.Exit(1)
+                for future in as_completed(future_jobs):
+                    job = future_jobs[future]
+                    try:
+                        handle_success(future.result())
+                    except Exception as exc:
+                        handle_failure(job.pdf, exc)
 
-    typer.echo(f"Done. {written_count} files written to {output_dir}", err=True)
+        if failures:
+            typer.echo(
+                f"Done with failures. {written_count} files written to {output_dir}; "
+                f"{len(failures)} failed.",
+                err=True,
+            )
+            typer.echo("Failures:", err=True)
+            for failed_file, reason in failures:
+                typer.echo(f"- {failed_file.name}: {reason}", err=True)
+            if diagnostic_log is not None:
+                diagnostic_log.record(
+                    "command_completed",
+                    command="batch",
+                    pdf=directory,
+                    target=output_dir,
+                    project=project,
+                    success=False,
+                    written_count=written_count,
+                    failed_count=len(failures),
+                )
+            raise typer.Exit(1)
+
+        if diagnostic_log is not None:
+            diagnostic_log.record(
+                "command_completed",
+                command="batch",
+                pdf=directory,
+                target=output_dir,
+                project=project,
+                success=True,
+                written_count=written_count,
+            )
+        typer.echo(f"Done. {written_count} files written to {output_dir}", err=True)
+    except Exception as exc:
+        if not isinstance(exc, typer.Exit):
+            _record_command_failure(diagnostic_log, command="batch", path=directory, exc=exc)
+        if isinstance(exc, (typer.BadParameter, click.ClickException, typer.Exit)):
+            raise
+        raise click.ClickException(
+            f"Failed to convert {directory.name}: {_describe_cli_error(exc)}"
+        ) from exc
 
 
 if __name__ == "__main__":

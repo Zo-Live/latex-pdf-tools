@@ -12,6 +12,11 @@ from texbook.gui.selection import GuiInputKind, GuiPathSelectionState
 from texbook.llm.presets import DEFAULT_PROMPT_PRESET_NAME
 
 
+def default_gui_log_file_path() -> str:
+    """Return the default GUI diagnostic log file path."""
+    return _join_path_text("build/.texbook_cache", "texbook.log")
+
+
 class GuiOutputKind(str, Enum):
     """Output forms exposed by the GUI."""
 
@@ -217,3 +222,9 @@ def parse_gui_pages(pages: str) -> list[int] | None:
         seen.add(page)
         unique_pages.append(page)
     return unique_pages
+
+
+def _join_path_text(directory: str, *parts: str) -> str:
+    base = directory.rstrip("/\\")
+    separator = "\\" if "\\" in directory and "/" not in directory else "/"
+    return separator.join((base, *parts)) if base else separator.join(parts)
