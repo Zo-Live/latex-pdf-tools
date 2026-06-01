@@ -120,7 +120,7 @@ export TEXBOOK_BASE_URL="https://your-api.example/v1"
 
 - 页面范围支持 `1,3-6` 这样的 1-based 页码表达。
 - 文档类支持 `auto`、`article`、`book`、`beamer`、`ctexart`、`ctexbook`、`ctexbeamer`。
-- 自动文档类会结合 PDF 页面图像、文本层、书签和标题线索判断输出外壳。
+- 自动文档类会结合 PDF 页面图像、文本层、书签和标题线索判断输出外壳；如果你已经知道目标是讲义、教材还是幻灯片，建议直接手动指定对应文档类，`auto` 更适合拿不准时作为兜底，但它偶尔会判成与预期不同的文档类。
 - 目录化项目支持结构规划：可使用 PDF 书签、本地标题线索或 LLM 规划章节。
 - Beamer 输出支持标题页开关、原生 block 或 `tcolorbox` 风格强调块。
 - CTeX 输出支持默认字体配置和本机字体配置。
