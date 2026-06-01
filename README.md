@@ -100,6 +100,7 @@ export TEXBOOK_BASE_URL="https://your-api.example/v1"
 5. 点击“开始转换”，后台任务会显示阶段、进度、缓存命中、重试和完成结果。
 6. 需要中止时，可在任务行点击取消。
 7. 目标文件或项目目录已存在时，按界面中的写盘策略确认覆盖或保留旧内容。
+8. 需要排查转换问题时，可在“日志”区域选择输出路径，并通过帮助菜单的“输出日志”导出当前会话日志。
 
 ## 功能介绍
 
@@ -145,6 +146,19 @@ export TEXBOOK_BASE_URL="https://your-api.example/v1"
 - 任务行显示当前状态、阶段、进度、缓存命中、重试次数、失败原因和完成结果。
 - 待处理任务可立即取消；运行中任务会在当前核心步骤收敛后取消。
 - 队列完成后可继续添加新任务。
+
+### 日志与排错
+
+- GUI 会在当前会话中记录任务创建、阶段进度、缓存命中、请求重试、失败、取消、写盘和日志导出事件。
+- 左侧“日志”区域可选择 JSONL 日志输出路径；帮助菜单中的“输出日志”会把当前会话内存日志写入该文件。
+- CLI 的 `extract` 和 `batch` 命令也支持 `--log-file PATH`，适合在 WSL 终端中复现或批量排查问题：
+
+```bash
+uv run texbook extract "input/lecture.pdf" -o "output/lecture.tex" --log-file "logs/lecture.jsonl"
+uv run texbook batch input/ -o output/ --log-file "logs/batch.jsonl"
+```
+
+日志会脱敏 API Key、授权头、token 等敏感字段。LLM 响应解析失败时，只记录截断后的原始响应预览，便于定位模型输出格式问题。
 
 ### 界面偏好
 
