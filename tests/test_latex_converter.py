@@ -37,6 +37,16 @@ _CENTERED_TEXT_BLOCK_LINES = [
 _BEAMER_CENTERED_TEXT_MARGIN_LINE = (
     r"\setbeamersize{text margin left=1em,text margin right=1em}"
 )
+_ARTICLE_FOOTER_PAGE_NUMBER_LINES = [
+    r"\makeatletter",
+    r"\def\ps@plain{\let\@oddhead\@empty\let\@evenhead\@empty\def\@oddfoot{\hfil\thepage\hfil}\def\@evenfoot{\hfil\thepage\hfil}}",
+    r"\pagestyle{plain}",
+    r"\makeatother",
+]
+_ARTICLE_FOOTER_PAGE_NUMBER_STYLE_LINES = [
+    _ARTICLE_FOOTER_PAGE_NUMBER_LINES[1],
+    _ARTICLE_FOOTER_PAGE_NUMBER_LINES[2],
+]
 
 
 def test_convert_fragments_strips_document_wrappers():
@@ -129,6 +139,32 @@ def test_beamer_document_classes_use_symmetric_text_margins():
 
         assert _BEAMER_CENTERED_TEXT_MARGIN_LINE in preamble
         for line in _CENTERED_TEXT_BLOCK_LINES:
+            assert line not in preamble
+
+
+def test_article_document_classes_use_centered_footer_page_numbers():
+    for document_class in (
+        LatexDocumentClass.article,
+        LatexDocumentClass.ctexart,
+    ):
+        converter = LatexConverter(document_class=document_class)
+        preamble = "\n".join(converter.preamble_lines())
+
+        for line in _ARTICLE_FOOTER_PAGE_NUMBER_LINES:
+            assert line in preamble
+
+
+def test_book_and_beamer_document_classes_keep_existing_page_style():
+    for document_class in (
+        LatexDocumentClass.book,
+        LatexDocumentClass.ctexbook,
+        LatexDocumentClass.beamer,
+        LatexDocumentClass.ctexbeamer,
+    ):
+        converter = LatexConverter(document_class=document_class)
+        preamble = "\n".join(converter.preamble_lines())
+
+        for line in _ARTICLE_FOOTER_PAGE_NUMBER_STYLE_LINES:
             assert line not in preamble
 
 
@@ -271,6 +307,8 @@ def test_project_builder_builds_main_preamble_and_chapters():
     assert r"\usepackage{amsmath}" in preamble
     assert r"\newtheorem{definition}{定义}" in preamble
     for line in _CENTERED_TEXT_BLOCK_LINES:
+        assert line in preamble
+    for line in _ARTICLE_FOOTER_PAGE_NUMBER_LINES:
         assert line in preamble
     assert r"\documentclass" not in preamble
     assert r"\begin{document}" not in preamble
