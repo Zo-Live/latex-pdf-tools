@@ -138,6 +138,7 @@ class DiagnosticLog:
             error=event.error,
             raw_preview=str(metadata.get("raw_preview", "")),
             metadata=metadata,
+            finish_reason=str(metadata.get("finish_reason", "")),
         )
 
     def export(self, path: str | Path) -> Path:
@@ -172,6 +173,9 @@ def exception_metadata(exc: Exception) -> dict[str, object]:
     raw_preview = getattr(exc, "raw_preview", "")
     if raw_preview:
         metadata["raw_preview"] = truncate_preview(str(raw_preview))
+    finish_reason = getattr(exc, "finish_reason", "")
+    if finish_reason:
+        metadata["finish_reason"] = str(finish_reason)
     return metadata
 
 
