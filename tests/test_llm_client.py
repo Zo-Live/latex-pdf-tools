@@ -55,6 +55,20 @@ def test_parse_chunk_response_accepts_fenced_latex_fragment():
     assert result.notes == []
 
 
+def test_parse_chunk_response_accepts_explanatory_fenced_latex_fragment():
+    result = parse_chunk_response(
+        "下面是转换后的正文片段：\n\n"
+        "```latex\n"
+        "\\section{幂级数}\n"
+        "正文内容\n"
+        "```\n"
+        "如需继续请处理下一页。"
+    )
+
+    assert result.latex == "\\section{幂级数}\n正文内容"
+    assert result.notes == []
+
+
 def test_parse_chunk_response_accepts_bare_latex_fragment():
     result = parse_chunk_response(
         "\\section{集合}\n\n% TODO: figure pending_asset: logo\n"
@@ -62,6 +76,41 @@ def test_parse_chunk_response_accepts_bare_latex_fragment():
 
     assert result.latex == "\\section{集合}\n\n% TODO: figure pending_asset: logo"
     assert result.notes == []
+
+
+def test_parse_chunk_response_accepts_explanatory_bare_latex_fragment():
+    result = parse_chunk_response(
+        "转换结果如下：\n"
+        "\\subsection{收敛半径}\n"
+        "\\[\n"
+        "R=1\n"
+        "\\]\n"
+    )
+
+    assert result.latex == "\\subsection{收敛半径}\n\\[\nR=1\n\\]"
+    assert result.notes == []
+
+
+def test_parse_chunk_response_rejects_empty_response_with_preview():
+    try:
+        parse_chunk_response("   \n")
+    except LLMResponseError as exc:
+        assert "empty" in str(exc)
+        assert exc.raw_preview == "[empty response]"
+    else:
+        raise AssertionError("Expected LLMResponseError")
+
+
+def test_parse_chunk_response_does_not_recover_truncated_json():
+    raw = '{"latex": "\\\\section{集合}"'
+
+    try:
+        parse_chunk_response(raw)
+    except LLMResponseError as exc:
+        assert "JSON" in str(exc)
+        assert exc.raw_preview == raw
+    else:
+        raise AssertionError("Expected LLMResponseError")
 
 
 def test_parse_chunk_response_rejects_missing_latex():
@@ -156,6 +205,48 @@ def test_openai_client_uses_explicit_read_timeout(monkeypatch):
     )
 
     assert captured["timeout"].read == 10.0
+
+
+def test_openai_client_rejects_truncated_chunk_response(monkeypatch):
+    class FakeCompletions:
+        def create(self, **kwargs):
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="length",
+                        message=SimpleNamespace(
+                            content='{"latex": "\\\\section{集合}"'
+                        ),
+                    )
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=FakeOpenAI))
+
+    client = OpenAICompatibleClient(
+        LLMConfig(
+            model="test-model",
+            api_key="test-key",
+        )
+    )
+
+    try:
+        client.generate_latex_chunk(
+            document_title="测试",
+            pages=[PdfPageContext(page_number=1, width=1, height=1)],
+            chunk_index=1,
+            total_chunks=1,
+        )
+    except LLMResponseError as exc:
+        assert "truncated" in str(exc)
+        assert exc.finish_reason == "length"
+        assert exc.raw_preview == '{"latex": "\\\\section{集合}"'
+    else:
+        raise AssertionError("Expected LLMResponseError")
 
 
 def test_build_chunk_messages_contains_page_text_and_image():

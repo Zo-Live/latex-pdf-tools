@@ -30,9 +30,16 @@ from .presets import PromptPreset
 class LLMResponseError(RuntimeError):
     """Raised when the LLM response cannot be used."""
 
-    def __init__(self, message: str, *, raw_preview: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        raw_preview: str = "",
+        finish_reason: str = "",
+    ) -> None:
         super().__init__(message)
         self.raw_preview = raw_preview
+        self.finish_reason = finish_reason
 
 
 @dataclass
@@ -146,9 +153,11 @@ class OpenAICompatibleClient:
                     request_kwargs,
                     response_format=False,
                 )
-        content = response.choices[0].message.content
-        if not isinstance(content, str):
-            raise LLMResponseError("LLM response content is empty or not text.")
+        content = _completion_content(
+            response,
+            empty_message="LLM response content is empty or not text.",
+            truncated_message="LLM response was truncated before valid JSON could be read.",
+        )
         return parse_chunk_response(content)
 
     def generate_document_class(
@@ -188,11 +197,13 @@ class OpenAICompatibleClient:
                     request_kwargs,
                     response_format=False,
                 )
-        content = response.choices[0].message.content
-        if not isinstance(content, str):
-            raise LLMResponseError(
-                "LLM document-class response content is empty or not text."
-            )
+        content = _completion_content(
+            response,
+            empty_message="LLM document-class response content is empty or not text.",
+            truncated_message=(
+                "LLM document-class response was truncated before valid JSON could be read."
+            ),
+        )
         return parse_document_class_response(content)
 
     def generate_document_title(
@@ -231,9 +242,13 @@ class OpenAICompatibleClient:
                     request_kwargs,
                     response_format=False,
                 )
-        content = response.choices[0].message.content
-        if not isinstance(content, str):
-            raise LLMResponseError("LLM title response content is empty or not text.")
+        content = _completion_content(
+            response,
+            empty_message="LLM title response content is empty or not text.",
+            truncated_message=(
+                "LLM title response was truncated before valid JSON could be read."
+            ),
+        )
         return parse_title_response(content)
 
     def generate_structure_plan(
@@ -277,9 +292,13 @@ class OpenAICompatibleClient:
                     request_kwargs,
                     response_format=False,
                 )
-        content = response.choices[0].message.content
-        if not isinstance(content, str):
-            raise LLMResponseError("LLM structure response content is empty or not text.")
+        content = _completion_content(
+            response,
+            empty_message="LLM structure response content is empty or not text.",
+            truncated_message=(
+                "LLM structure response was truncated before valid JSON could be read."
+            ),
+        )
         return parse_structure_plan_response(content)
 
     def _create_completion(self, request_kwargs: dict[str, Any], *, response_format: bool):
@@ -291,17 +310,31 @@ class OpenAICompatibleClient:
         return self._client.chat.completions.create(**request_kwargs)
 
 
+_FENCED_BLOCK_RE = re.compile(r"```([^\n`]*)\n([\s\S]*?)```")
+
+
 def parse_chunk_response(raw_content: str) -> LLMChunkResult:
     """Parse the expected JSON object from an LLM response."""
     stripped, fence_language = _strip_code_fence_with_language(raw_content)
+    if not stripped:
+        raise LLMResponseError(
+            "LLM chunk response is empty.",
+            raw_preview="[empty response]",
+        )
     if fence_language in {"latex", "tex"}:
         return _recover_latex_chunk(stripped, raw_content)
+
+    if not stripped.startswith(("{", "[")):
+        fenced_latex = _extract_fenced_latex_fragment(raw_content)
+        if fenced_latex is not None:
+            return _recover_latex_chunk(fenced_latex, raw_content)
 
     try:
         data = _load_json_object(stripped, raw_content=raw_content)
     except LLMResponseError:
-        if _looks_like_latex_fragment(stripped):
-            return _recover_latex_chunk(stripped, raw_content)
+        latex_fragment = _extract_recoverable_latex_fragment(stripped)
+        if latex_fragment is not None:
+            return _recover_latex_chunk(latex_fragment, raw_content)
         raise
 
     latex = data.get("latex")
@@ -502,6 +535,33 @@ def _recover_latex_chunk(text: str, raw_content: str) -> LLMChunkResult:
     )
 
 
+def _extract_fenced_latex_fragment(text: str) -> str | None:
+    for match in _FENCED_BLOCK_RE.finditer(text):
+        language = match.group(1).strip().lower()
+        if language in {"latex", "tex"}:
+            latex = match.group(2).strip()
+            if latex:
+                return latex
+    return None
+
+
+def _extract_recoverable_latex_fragment(text: str) -> str | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if stripped.startswith(("{", "[")):
+        return None
+    if _looks_like_latex_fragment(stripped):
+        return stripped
+
+    lines = stripped.splitlines()
+    for index in range(1, len(lines)):
+        candidate = "\n".join(lines[index:]).strip()
+        if _looks_like_latex_fragment(candidate):
+            return candidate
+    return None
+
+
 def _looks_like_latex_fragment(text: str) -> bool:
     line = _first_content_line(text)
     if not line:
@@ -532,6 +592,32 @@ def _first_content_line(text: str) -> str:
 
 def _response_error(message: str, raw_content: str) -> LLMResponseError:
     return LLMResponseError(message, raw_preview=truncate_preview(raw_content))
+
+
+def _completion_content(
+    response: Any,
+    *,
+    empty_message: str,
+    truncated_message: str,
+) -> str:
+    choice = response.choices[0]
+    message = choice.message
+    content = message.content
+    finish_reason = str(getattr(choice, "finish_reason", "") or "")
+    if finish_reason in {"length", "content_filter"}:
+        raw_preview = truncate_preview(content) if isinstance(content, str) else ""
+        raise LLMResponseError(
+            truncated_message,
+            raw_preview=raw_preview,
+            finish_reason=finish_reason,
+        )
+    if not isinstance(content, str):
+        raise LLMResponseError(
+            empty_message,
+            raw_preview="[empty response]",
+            finish_reason=finish_reason,
+        )
+    return content
 
 
 def _normalize_response_title(title: str) -> str:

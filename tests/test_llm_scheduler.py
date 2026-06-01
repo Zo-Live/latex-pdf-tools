@@ -96,6 +96,7 @@ def test_scheduler_carries_raw_preview_from_request_failures():
         def __init__(self):
             super().__init__("invalid response")
             self.raw_preview = "```tex\\n\\begin{frame}\\n\\end{frame}```"
+            self.finish_reason = "length"
 
     def request():
         raise PreviewError()
@@ -106,6 +107,7 @@ def test_scheduler_carries_raw_preview_from_request_failures():
         scheduler.run(operation="chunk", label="chunk 1", request=request)
 
     assert events[-1].metadata["raw_preview"] == "```tex\\n\\begin{frame}\\n\\end{frame}```"
+    assert events[-1].metadata["finish_reason"] == "length"
     assert events[-1].metadata["exception_type"] == "PreviewError"
 
 
