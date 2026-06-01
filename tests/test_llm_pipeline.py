@@ -820,6 +820,82 @@ def test_project_output_falls_back_to_chunk_files_when_auto_planning_fails():
     assert any("回退" in note for note in project.notes)
 
 
+def test_project_output_falls_back_to_chunk_files_when_llm_planning_has_no_plan():
+    pages = [
+        PdfPageContext(page_number=1, width=1, height=1, image_base64="page-1"),
+        PdfPageContext(page_number=2, width=1, height=1, image_base64="page-2"),
+        PdfPageContext(page_number=3, width=1, height=1, image_base64="page-3"),
+    ]
+    extractor = FakeExtractor(pages)
+
+    class InsufficientClient(FakeClient):
+        def generate_structure_plan(self, **kwargs):
+            self.structure_calls.append({"stage": kwargs["stage"]})
+            return LLMStructurePlanResult(
+                status="insufficient",
+                reason="没有结构线索",
+            )
+
+    client = InsufficientClient(latex_fragments=["chunk-1", "chunk-2"])
+    converter = LLMPdfConverter(
+        client,
+        extractor=extractor,
+        chunk_pages=2,
+        structure_options=StructurePlannerOptions(mode=StructureMode.llm),
+    )
+
+    project = converter.convert_project(Path("docs/sample.pdf"))
+
+    assert client.structure_calls == [{"stage": "toc"}, {"stage": "headings"}]
+    assert "structure_plan" not in project.metadata
+    assert set(project.files) == {
+        PurePosixPath("main.tex"),
+        PurePosixPath("preamble.tex"),
+        PurePosixPath("chapters/chapter01.tex"),
+        PurePosixPath("chapters/chapter02.tex"),
+    }
+    assert any("LLM 未返回有效结构规划" in note for note in project.notes)
+
+
+def test_project_output_falls_back_to_chunk_files_when_llm_plan_is_unusable():
+    pages = [
+        PdfPageContext(page_number=1, width=1, height=1, image_base64="page-1"),
+        PdfPageContext(page_number=2, width=1, height=1, image_base64="page-2"),
+        PdfPageContext(page_number=3, width=1, height=1, image_base64="page-3"),
+    ]
+    extractor = FakeExtractor(pages)
+
+    class EmptyPlanClient(FakeClient):
+        def generate_structure_plan(self, **kwargs):
+            self.structure_calls.append({"stage": kwargs["stage"]})
+            return LLMStructurePlanResult(
+                status="complete",
+                confidence=0.8,
+                reason="空计划",
+                plan=[],
+            )
+
+    client = EmptyPlanClient(latex_fragments=["chunk-1", "chunk-2"])
+    converter = LLMPdfConverter(
+        client,
+        extractor=extractor,
+        chunk_pages=2,
+        structure_options=StructurePlannerOptions(mode=StructureMode.llm),
+    )
+
+    project = converter.convert_project(Path("docs/sample.pdf"))
+
+    assert client.structure_calls == [{"stage": "toc"}, {"stage": "headings"}]
+    assert "structure_plan" not in project.metadata
+    assert set(project.files) == {
+        PurePosixPath("main.tex"),
+        PurePosixPath("preamble.tex"),
+        PurePosixPath("chapters/chapter01.tex"),
+        PurePosixPath("chapters/chapter02.tex"),
+    }
+    assert any("回退" in note for note in project.notes)
+
+
 def test_project_structure_respects_non_contiguous_page_selection():
     pages = [
         PdfPageContext(page_number=1, width=1, height=1, image_base64="page-1"),
