@@ -74,7 +74,7 @@ uv run texbook extract "input/lecture.pdf" --project -o "lecture-project"
 uv run texbook extract "input/lecture.pdf" --project -o "lecture-project" --force
 ```
 
-默认 `--document-class auto` 会让 LLM 先判断 PDF 更适合 `article`、`book`、`beamer` 或对应 CTeX 类。中文教材、讲义和幻灯片通常会分别生成 `ctexbook`、`ctexart` 或 `ctexbeamer`；如果自动判断不合适，可以手动覆盖：
+默认 `--document-class auto` 会让 LLM 先判断 PDF 更适合 `article`、`book`、`beamer` 或对应 CTeX 类。中文教材、讲义和幻灯片通常会分别生成 `ctexbook`、`ctexart` 或 `ctexbeamer`。如果转换目的已经明确，建议直接用 `--document-class` 指定目标文档类；`auto` 更适合不确定时作为兜底，但它偶尔会把文档判成与预期不同的类：
 
 ```bash
 uv run texbook extract "input/slides.pdf" --project -o "slides-project" \
