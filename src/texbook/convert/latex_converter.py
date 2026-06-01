@@ -224,6 +224,7 @@ class LatexConverter:
         """Return package and theorem definitions shared by all output modes."""
         font_lines = self._ctex_font_lines()
         layout_lines = self._page_layout_lines()
+        page_style_lines = self._article_page_style_lines()
         if self.document_class.is_beamer:
             lines = [
                 *font_lines,
@@ -245,6 +246,7 @@ class LatexConverter:
         return [
             *font_lines,
             *layout_lines,
+            *page_style_lines,
             r"\usepackage{amsmath}",
             r"\usepackage{amsthm}",
             r"\usepackage{amssymb}",
@@ -350,6 +352,16 @@ class LatexConverter:
         return [
             r"\setlength{\oddsidemargin}{\dimexpr(\paperwidth-\textwidth)/2-1in\relax}",
             r"\setlength{\evensidemargin}{\oddsidemargin}",
+        ]
+
+    def _article_page_style_lines(self) -> list[str]:
+        if self.document_class.family != "article":
+            return []
+        return [
+            r"\makeatletter",
+            r"\def\ps@plain{\let\@oddhead\@empty\let\@evenhead\@empty\def\@oddfoot{\hfil\thepage\hfil}\def\@evenfoot{\hfil\thepage\hfil}}",
+            r"\pagestyle{plain}",
+            r"\makeatother",
         ]
 
     def _beamer_box_lines(self) -> list[str]:
