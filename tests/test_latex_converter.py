@@ -30,6 +30,15 @@ from texbook.structure import (
 )
 
 
+_CENTERED_TEXT_BLOCK_LINES = [
+    r"\setlength{\oddsidemargin}{\dimexpr(\paperwidth-\textwidth)/2-1in\relax}",
+    r"\setlength{\evensidemargin}{\oddsidemargin}",
+]
+_BEAMER_CENTERED_TEXT_MARGIN_LINE = (
+    r"\setbeamersize{text margin left=1em,text margin right=1em}"
+)
+
+
 def test_convert_fragments_strips_document_wrappers():
     converter = LatexConverter()
     latex = converter.convert_fragments(
@@ -93,6 +102,34 @@ def test_strip_invalid_chars_removes_control_chars_but_keeps_whitespace():
     converter = LatexConverter()
 
     assert converter._strip_invalid_chars("a\x00b\tc\nd\re\x1ff") == "ab\tc\nd\ref"
+
+
+def test_non_beamer_document_classes_center_text_block():
+    for document_class in (
+        LatexDocumentClass.article,
+        LatexDocumentClass.book,
+        LatexDocumentClass.ctexart,
+        LatexDocumentClass.ctexbook,
+    ):
+        converter = LatexConverter(document_class=document_class)
+        preamble = "\n".join(converter.preamble_lines())
+
+        for line in _CENTERED_TEXT_BLOCK_LINES:
+            assert line in preamble
+        assert _BEAMER_CENTERED_TEXT_MARGIN_LINE not in preamble
+
+
+def test_beamer_document_classes_use_symmetric_text_margins():
+    for document_class in (
+        LatexDocumentClass.beamer,
+        LatexDocumentClass.ctexbeamer,
+    ):
+        converter = LatexConverter(document_class=document_class)
+        preamble = "\n".join(converter.preamble_lines())
+
+        assert _BEAMER_CENTERED_TEXT_MARGIN_LINE in preamble
+        for line in _CENTERED_TEXT_BLOCK_LINES:
+            assert line not in preamble
 
 
 def test_clean_body_fragment_strips_document_wrappers_with_options():
@@ -233,6 +270,8 @@ def test_project_builder_builds_main_preamble_and_chapters():
     preamble = project.files[PurePosixPath("preamble.tex")]
     assert r"\usepackage{amsmath}" in preamble
     assert r"\newtheorem{definition}{定义}" in preamble
+    for line in _CENTERED_TEXT_BLOCK_LINES:
+        assert line in preamble
     assert r"\documentclass" not in preamble
     assert r"\begin{document}" not in preamble
 
@@ -297,6 +336,7 @@ def test_project_builder_can_emit_ctexbeamer_project():
     assert r"\begin{frame}" in main
     assert r"\titlepage" in main
     assert r"\@ifundefined{definition}" in preamble
+    assert _BEAMER_CENTERED_TEXT_MARGIN_LINE in preamble
     assert r"\setbeamertemplate{navigation symbols}{}" in preamble
     assert r"\begin{frame}" in chapter
     assert r"\frametitle{集合}" in chapter
