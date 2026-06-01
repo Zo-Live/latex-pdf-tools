@@ -137,6 +137,13 @@ uv run texbook batch input/ --project -o src/
 
 例如 `input/book.pdf` 会写入 `src/book/main.tex`。`batch --project --force` 只会清空对应 PDF 的项目目录，不会清空整个输出父目录。
 
+需要排查转换过程时，`extract` 和 `batch` 都支持 `--log-file PATH`，命令启动时会创建或覆盖指定 JSONL 日志文件，并在运行期间持续追加诊断事件：
+
+```bash
+uv run texbook extract "input/lecture.pdf" -o "output/lecture.tex" --log-file "logs/lecture.jsonl"
+uv run texbook batch input/ -o output/ --log-file "logs/batch.jsonl"
+```
+
 ## 本地编译
 
 如果本地存在 `.latexmkrc`、`src/.latexmkrc` 和 `scripts/post-build.sh`，可以从仓库根目录运行：
@@ -208,10 +215,17 @@ uv run texbook presets add --name math-lite --from-preset math --overwrite
 - `--cache-dir`：断点续传缓存目录，默认 `build/.texbook_cache/`。
 - `--no-cache`：禁用结构规划与 chunk 缓存。
 - `--clear-cache`：清理当前 PDF 和参数对应的缓存后再转换。
+- `--log-file`：为 `extract` 或 `batch` 持续写入 JSONL 诊断日志，用于排查转换阶段、缓存、重试、失败和写盘问题。
 
 断点续传缓存默认启用。相同 PDF、页码、模型、prompt、图片参数、最终文档类和结构规划参数重跑时会复用已完成 chunk；项目模式还会复用文档类判断和结构规划结果，避免大型教材重复规划。中途失败后再次运行可从已完成判断、规划或 chunk 继续。缓存目录中会保留 `document-class/document-class.json`、`evidence.json`、`structure-*.json` 等中间产物，便于检查文档类型、书签、标题线索、LLM 规划响应和最终结构计划。等待未命中缓存的 LLM 请求时，交互式终端会在 stderr 显示加载提示，stdout 仍只输出 LaTeX，便于重定向。
 
 单个 PDF 的正文 chunk 会继续顺序发送给 LLM，因为后续 chunk 会收到前序 LaTeX 尾部作为上下文；`--prefetch-chunks` 只提前渲染页面图像。大量文件转换时可以用 `batch --batch-workers N` 做文件级并发，并用 `--llm-max-concurrency` 与 `--llm-min-request-interval` 控制共享 LLM 请求节奏。可恢复错误包括网络、超时、限流和服务端临时错误；已成功的结构规划和正文 chunk 会立即写入缓存，重新运行时继续复用。
+
+## 诊断日志
+
+诊断日志使用 JSONL 格式，每行一个事件。日志会记录命令启动、每个 PDF 的阶段进度、缓存命中、LLM 请求重试、失败、取消、写盘和命令完成等信息；`batch` 并发写入时会保持单行 JSON 完整。
+
+日志会脱敏 API Key、授权头、token 等敏感字段。文档类、标题、结构规划或正文 chunk 的 LLM 响应解析失败时，日志只记录截断后的原始响应预览，便于定位模型输出格式问题，同时避免把完整响应无限制写入文件。
 
 ## 复杂内容处理
 
