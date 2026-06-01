@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from texbook.diagnostics import DiagnosticLog
 from texbook.gui.executor import GuiOverwriteConfirmationRequest, GuiTaskExecutor
 from texbook.gui.display import (
     DEFAULT_GUI_FONT_POINT_SIZE,
@@ -52,6 +53,7 @@ from texbook.gui.settings import (
     GuiConversionMode,
     GuiOutputKind,
     GuiConversionSettings,
+    default_gui_log_file_path,
     validate_gui_settings,
 )
 from texbook.gui.tasks import (
@@ -127,6 +129,7 @@ class ConversionMainPanel(QWidget):
         self._task_rows: dict[str, QFrame] = {}
         self._executor: GuiTaskExecutor | None = None
         self._executor_factory = GuiTaskExecutor
+        self._diagnostic_log = DiagnosticLog()
         self._sections: dict[str, SectionPanel] = {}
         self._row_labels: dict[str, QLabel] = {}
         self._metric_pills: dict[GuiTaskStatus, MetricPill] = {}
@@ -255,6 +258,7 @@ class ConversionMainPanel(QWidget):
         parameters_layout.addWidget(self._create_document_panel())
         parameters_layout.addWidget(self._create_model_panel())
         parameters_layout.addWidget(self._create_cache_panel())
+        parameters_layout.addWidget(self._create_log_panel())
         parameters_layout.addWidget(self._create_advanced_panel())
         layout.addWidget(parameters)
 
@@ -546,6 +550,29 @@ class ConversionMainPanel(QWidget):
         panel.body_layout.addWidget(grid)
         return panel
 
+    def _create_log_panel(self) -> SectionPanel:
+        panel = self._register_section(
+            "section.log",
+            SectionPanel("", object_name="diagnosticLogPanel", parent=self),
+        )
+        grid = OptionGrid(parent=panel)
+
+        log_path = QLineEdit(panel)
+        log_path.setObjectName("logFilePathField")
+        log_path.setReadOnly(True)
+        log_path.setText(default_gui_log_file_path())
+        self.log_file_path_field = log_path
+        browse = self._make_icon_button(
+            "logFileBrowseButton",
+            QStyle.StandardPixmap.SP_DialogSaveButton,
+            "",
+        )
+        self.log_file_browse_button = browse
+        self._add_grid_row(grid, "field.log_file", InlineField(log_path, browse, parent=panel))
+
+        panel.body_layout.addWidget(grid)
+        return panel
+
     def _create_advanced_panel(self) -> SectionPanel:
         panel = self._register_section(
             "section.advanced",
@@ -781,6 +808,7 @@ class ConversionMainPanel(QWidget):
         self.pdf_input_browse_button.clicked.connect(self._browse_pdf_input)
         self.output_browse_button.clicked.connect(self._browse_output_directory)
         self.cache_browse_button.clicked.connect(self._browse_cache_directory)
+        self.log_file_browse_button.clicked.connect(self._browse_log_file)
         self.theme_button.clicked.connect(self.toggle_theme)
         self.language_button.clicked.connect(self.toggle_language)
         self.settings_button.clicked.connect(
@@ -954,6 +982,7 @@ class ConversionMainPanel(QWidget):
         self.pdf_input_browse_button.setToolTip(self._tr("dialog.pdf_file.title"))
         self.output_browse_button.setToolTip(self._tr("field.output_target"))
         self.cache_browse_button.setToolTip(self._tr("dialog.cache_directory.title"))
+        self.log_file_browse_button.setToolTip(self._tr("dialog.log_file.title"))
         self.confirm_overwrite_checkbox.setText(self._tr("checkbox.confirm_overwrite"))
         self.show_date_checkbox.setText(self._tr("checkbox.show_date"))
         self.beamer_title_page_checkbox.setText(self._tr("checkbox.beamer_title_page"))
@@ -1034,6 +1063,17 @@ class ConversionMainPanel(QWidget):
             self.path_memory = self.path_memory.remember_cache_directory(directory)
             self.cache_directory_field.setText(directory)
 
+    def _browse_log_file(self) -> None:
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            self,
+            self._tr("dialog.log_file.title"),
+            self._log_file_dialog_path(),
+            self._tr("dialog.filter.log"),
+        )
+        if path:
+            self.path_memory = self.path_memory.remember_log_file_path(path)
+            self.log_file_path_field.setText(path)
+
     def _change_input_kind(self, _text: str) -> None:
         self.set_input_selection(GuiInputSelection.empty(self._current_input_kind()))
 
@@ -1061,12 +1101,14 @@ class ConversionMainPanel(QWidget):
     def set_path_memory(self, path_memory: GuiPathMemory) -> None:
         """Replace dialog path memory restored from persistent settings."""
         self.path_memory = path_memory
+        self._refresh_log_file_path_field()
 
     def current_path_memory(self) -> GuiPathMemory:
         """Return current dialog path memory."""
-        return self.path_memory
+        return self.path_memory.remember_log_file_path(self._current_log_file_path())
 
     def _refresh_path_state(self, *, publish_status: bool = True) -> None:
+        self._refresh_log_file_path_field()
         self.pdf_input_field.setText(self.selection_state.input_selection.display_text(self._language))
         self.output_directory_field.setText(self.selection_state.output_directory)
         self._refresh_mode_controls()
@@ -1108,6 +1150,21 @@ class ConversionMainPanel(QWidget):
             self.path_memory.last_cache_directory
             or system_default_dialog_directory()
         )
+
+    def _log_file_dialog_path(self) -> str:
+        return self._current_log_file_path()
+
+    def _current_log_file_path(self) -> str:
+        return (
+            self.log_file_path_field.text().strip()
+            or self.path_memory.last_log_file_path
+            or default_gui_log_file_path()
+        )
+
+    def _refresh_log_file_path_field(self) -> None:
+        path = self.path_memory.last_log_file_path or default_gui_log_file_path()
+        if self.log_file_path_field.text() != path:
+            self.log_file_path_field.setText(path)
 
     def _output_tex_dialog_path(self) -> str:
         directory = self._output_dialog_directory()
@@ -1334,6 +1391,26 @@ class ConversionMainPanel(QWidget):
     def validate_settings(self) -> list[str]:
         return validate_gui_settings(self.current_settings(), language=self._language)
 
+    def export_diagnostic_log(self) -> None:
+        """Export the current in-memory diagnostic log to the selected path."""
+        path = self._current_log_file_path()
+        try:
+            exported = self._diagnostic_log.export(path)
+        except OSError as exc:
+            self._diagnostic_log.record(
+                "log_export_failed",
+                path=path,
+                error=str(exc),
+                exception_type=exc.__class__.__name__,
+            )
+            self._publish_status_message(
+                self._tr("status.log_export_failed", error=str(exc))
+            )
+            return
+        self.path_memory = self.path_memory.remember_log_file_path(str(exported))
+        self.log_file_path_field.setText(str(exported))
+        self._publish_status_message(self._tr("status.log_exported", path=exported))
+
     def add_current_tasks(self) -> None:
         """Create pending in-memory tasks from current settings."""
         if self._executor is not None:
@@ -1350,6 +1427,13 @@ class ConversionMainPanel(QWidget):
         self.tasks.extend(new_tasks)
         for task in new_tasks:
             self._task_states[task.task_id] = create_task_view_state(task)
+            self._diagnostic_log.record(
+                "task_added",
+                task_id=task.task_id,
+                pdf=task.source_pdf,
+                target=task.output_target.path,
+                output_kind=task.output_target.kind.value,
+            )
         self._clear_path_selection_after_task_creation()
         self._refresh_path_state(publish_status=False)
         self._refresh_task_summary()
@@ -1371,6 +1455,10 @@ class ConversionMainPanel(QWidget):
             self._refresh_action_state()
             return
 
+        self._diagnostic_log.record(
+            "tasks_start_requested",
+            task_count=len(pending_tasks),
+        )
         max_workers = self.current_settings().batch_workers
         executor = self._executor_factory(pending_tasks, max_workers=max_workers, parent=self)
         self._executor = executor
@@ -1393,10 +1481,20 @@ class ConversionMainPanel(QWidget):
             raise ValueError(self._tr("status.unknown_task", task_id=task_id))
         if state.status in TERMINAL_TASK_STATUSES:
             return
+        self._diagnostic_log.record(
+            "task_cancel_requested",
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+        )
         if state.status == GuiTaskStatus.pending:
             if self._executor is not None:
                 self._executor.cancel_task(task_id)
             mark_task_canceled(state, language=self._language)
+            self._diagnostic_log.record(
+                "task_canceled",
+                task_id=task_id,
+                pdf=state.task.source_pdf,
+            )
             self._refresh_task_summary()
             self._publish_status_message(self._tr("status.pending_canceled"))
             return
@@ -1412,6 +1510,7 @@ class ConversionMainPanel(QWidget):
             return
         if not self.tasks and not self._task_states:
             return
+        self._diagnostic_log.record("task_queue_cleared", task_count=len(self._task_states))
         self.tasks.clear()
         self._task_states.clear()
         self._refresh_task_summary()
@@ -1438,6 +1537,11 @@ class ConversionMainPanel(QWidget):
         state = self._task_states.get(task_id)
         if state is None:
             raise ValueError(self._tr("status.unknown_task", task_id=task_id))
+        self._diagnostic_log.record_progress(
+            event,
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+        )
         apply_progress_event(state, event, language=self._language)
         self._refresh_task_summary()
 
@@ -1445,6 +1549,11 @@ class ConversionMainPanel(QWidget):
         state = self._task_states.get(task_id)
         if state is None or state.status == GuiTaskStatus.canceled:
             return
+        self._diagnostic_log.record(
+            "task_started",
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+        )
         mark_task_running(state, language=self._language)
         self._refresh_task_summary()
         self._publish_status_message(self._tr("status.converting", label=state.label))
@@ -1458,6 +1567,19 @@ class ConversionMainPanel(QWidget):
         if state is None:
             return
         resolved_notes = tuple(notes) if isinstance(notes, tuple) else ()
+        self._diagnostic_log.record(
+            "task_completed",
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+            target=result,
+        )
+        self._diagnostic_log.record(
+            "write_completed",
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+            path=result,
+            output_kind=state.task.output_target.kind.value,
+        )
         mark_task_completed(
             state,
             result=result,
@@ -1471,21 +1593,37 @@ class ConversionMainPanel(QWidget):
         state = self._task_states.get(task_id)
         if state is None:
             return
+        self._diagnostic_log.record(
+            "task_failed",
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+            error=error,
+        )
         mark_task_failed(state, error)
         self._refresh_task_summary()
         self._publish_status_message(self._tr("status.failed", label=state.label))
 
     def _handle_executor_task_canceling(self, task_id: str) -> None:
         state = self._task_states.get(task_id)
-        if state is None:
+        if state is None or state.status in TERMINAL_TASK_STATUSES:
             return
+        self._diagnostic_log.record(
+            "task_canceling",
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+        )
         mark_task_canceling(state, language=self._language)
         self._refresh_task_summary()
 
     def _handle_executor_task_canceled(self, task_id: str) -> None:
         state = self._task_states.get(task_id)
-        if state is None:
+        if state is None or state.status == GuiTaskStatus.canceled:
             return
+        self._diagnostic_log.record(
+            "task_canceled",
+            task_id=task_id,
+            pdf=state.task.source_pdf,
+        )
         mark_task_canceled(state, language=self._language)
         self._refresh_task_summary()
         self._publish_status_message(self._tr("status.canceled", label=state.label))
@@ -1493,6 +1631,12 @@ class ConversionMainPanel(QWidget):
     def _handle_overwrite_confirmation_requested(self, request: object) -> None:
         if not isinstance(request, GuiOverwriteConfirmationRequest):
             return
+        self._diagnostic_log.record(
+            "overwrite_requested",
+            task_id=request.task_id,
+            path=request.target,
+            output_kind=request.output_kind.value,
+        )
         message = QMessageBox(self)
         message.setIcon(QMessageBox.Icon.Warning)
         message.setWindowTitle(self._tr("dialog.overwrite.title"))
@@ -1512,12 +1656,19 @@ class ConversionMainPanel(QWidget):
         message.button(QMessageBox.StandardButton.Yes).setText(self._tr("dialog.overwrite.yes"))
         message.button(QMessageBox.StandardButton.No).setText(self._tr("dialog.overwrite.no"))
         approved = message.exec() == QMessageBox.StandardButton.Yes
+        self._diagnostic_log.record(
+            "overwrite_approved" if approved else "overwrite_rejected",
+            task_id=request.task_id,
+            path=request.target,
+            output_kind=request.output_kind.value,
+        )
         request.resolve(approved)
 
     def _handle_executor_finished(self) -> None:
         if self._executor is not None:
             self._executor.deleteLater()
             self._executor = None
+        self._diagnostic_log.record("executor_finished")
         self._refresh_task_summary()
         self._publish_status_message(self._tr("status.finished"))
 
@@ -1719,7 +1870,8 @@ class ConversionMainPanel(QWidget):
             self._executor = None
 
     def _clear_path_selection_after_task_creation(self) -> None:
-        """Reset only the active input/output selection after queue creation."""
+        """Reset active input/output selection and page range after queue creation."""
+        self.pages_field.clear()
         self.selection_state = GuiPathSelectionState(
             input_selection=GuiInputSelection.empty(self._current_input_kind()),
             output_directory="",

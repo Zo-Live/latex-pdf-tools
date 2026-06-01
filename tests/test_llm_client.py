@@ -42,11 +42,44 @@ def test_parse_chunk_response_restores_literal_newline_escapes():
     assert result.latex == "\\begin{frame}\n  % TODO: figure pending_asset\n\\end{frame}"
 
 
+def test_parse_chunk_response_accepts_fenced_latex_fragment():
+    result = parse_chunk_response(
+        "```tex\n"
+        "\\begin{frame}\n"
+        "  % TODO: figure pending_asset\n"
+        "\\end{frame}\n"
+        "```"
+    )
+
+    assert result.latex == "\\begin{frame}\n  % TODO: figure pending_asset\n\\end{frame}"
+    assert result.notes == []
+
+
+def test_parse_chunk_response_accepts_bare_latex_fragment():
+    result = parse_chunk_response(
+        "\\section{集合}\n\n% TODO: figure pending_asset: logo\n"
+    )
+
+    assert result.latex == "\\section{集合}\n\n% TODO: figure pending_asset: logo"
+    assert result.notes == []
+
+
 def test_parse_chunk_response_rejects_missing_latex():
     try:
         parse_chunk_response('{"notes": []}')
     except LLMResponseError as exc:
         assert "latex" in str(exc)
+        assert exc.raw_preview == '{"notes": []}'
+    else:
+        raise AssertionError("Expected LLMResponseError")
+
+
+def test_parse_chunk_response_rejects_non_latex_noise_and_exposes_preview():
+    try:
+        parse_chunk_response("not json and not latex")
+    except LLMResponseError as exc:
+        assert "JSON" in str(exc)
+        assert exc.raw_preview == "not json and not latex"
     else:
         raise AssertionError("Expected LLMResponseError")
 

@@ -48,17 +48,16 @@ def default_gui_cache_directory() -> str:
         return _join_path_text(APP_DISPLAY_NAME, "cache")
 
 
+def default_gui_log_file_path() -> str:
+    """Return the default GUI diagnostic log file path."""
+    return _join_path_text(default_gui_cache_directory(), "texbook.log")
+
+
 def _ensure_qt_application_identity() -> None:
     if QCoreApplication.organizationName() != APP_ORGANIZATION_NAME:
         QCoreApplication.setOrganizationName(APP_ORGANIZATION_NAME)
     if QCoreApplication.applicationName() != APP_DISPLAY_NAME:
         QCoreApplication.setApplicationName(APP_DISPLAY_NAME)
-
-
-def _join_path_text(directory: str, *parts: str) -> str:
-    base = directory.rstrip("/\\")
-    separator = "\\" if "\\" in directory and "/" not in directory else "/"
-    return separator.join((base, *parts)) if base else separator.join(parts)
 
 
 class GuiOutputKind(str, Enum):
@@ -266,3 +265,9 @@ def parse_gui_pages(pages: str) -> list[int] | None:
         seen.add(page)
         unique_pages.append(page)
     return unique_pages
+
+
+def _join_path_text(directory: str, *parts: str) -> str:
+    base = directory.rstrip("/\\")
+    separator = "\\" if "\\" in directory and "/" not in directory else "/"
+    return separator.join((base, *parts)) if base else separator.join(parts)

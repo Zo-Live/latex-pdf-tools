@@ -89,6 +89,26 @@ def test_scheduler_reports_failure_after_retries_are_exhausted():
     assert events[-1].attempt == 2
 
 
+def test_scheduler_carries_raw_preview_from_request_failures():
+    events = []
+
+    class PreviewError(RuntimeError):
+        def __init__(self):
+            super().__init__("invalid response")
+            self.raw_preview = "```tex\\n\\begin{frame}\\n\\end{frame}```"
+
+    def request():
+        raise PreviewError()
+
+    scheduler = LLMScheduler(reporter=events.append)
+
+    with pytest.raises(PreviewError):
+        scheduler.run(operation="chunk", label="chunk 1", request=request)
+
+    assert events[-1].metadata["raw_preview"] == "```tex\\n\\begin{frame}\\n\\end{frame}```"
+    assert events[-1].metadata["exception_type"] == "PreviewError"
+
+
 def test_rate_limiter_allows_only_configured_concurrency():
     limiter = LLMRateLimiter(max_concurrency=1)
     entered = threading.Event()

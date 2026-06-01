@@ -21,6 +21,7 @@ from texbook.gui.settings import (
     GuiApiKeySource,
     GuiConversionSettings,
     GuiOutputKind,
+    default_gui_log_file_path,
 )
 
 
@@ -34,6 +35,7 @@ class GuiPathMemory:
     last_input_directory: str = ""
     last_output_directory: str = ""
     last_cache_directory: str = ""
+    last_log_file_path: str = ""
 
     def remember_input_selection(self, selection: GuiInputSelection) -> "GuiPathMemory":
         if not selection.paths:
@@ -57,6 +59,12 @@ class GuiPathMemory:
         if not directory:
             return self
         return replace(self, last_cache_directory=directory)
+
+    def remember_log_file_path(self, path: str) -> "GuiPathMemory":
+        path = path.strip()
+        if not path:
+            return self
+        return replace(self, last_log_file_path=path)
 
 
 @dataclass(frozen=True)
@@ -253,6 +261,10 @@ class GuiSettingsStore:
             last_input_directory=self._read_str("paths/last_input_directory", ""),
             last_output_directory=self._read_str("paths/last_output_directory", ""),
             last_cache_directory=self._read_str("paths/last_cache_directory", ""),
+            last_log_file_path=self._read_str(
+                "paths/last_log_file_path",
+                default_gui_log_file_path(),
+            ),
         )
 
     def save_path_memory(self, path_memory: GuiPathMemory) -> None:
@@ -260,6 +272,7 @@ class GuiSettingsStore:
         self._settings.setValue("paths/last_input_directory", path_memory.last_input_directory)
         self._settings.setValue("paths/last_output_directory", path_memory.last_output_directory)
         self._settings.setValue("paths/last_cache_directory", path_memory.last_cache_directory)
+        self._settings.setValue("paths/last_log_file_path", path_memory.last_log_file_path)
         self._settings.sync()
 
     def load_display_preferences(self) -> GuiDisplayPreferences:

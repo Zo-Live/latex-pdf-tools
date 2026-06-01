@@ -10,6 +10,8 @@ from typing import Callable, Iterator, Protocol, TypeVar
 
 import httpx
 
+from texbook.diagnostics import exception_metadata
+
 
 T = TypeVar("T")
 
@@ -161,6 +163,8 @@ class LLMScheduler:
                     )
                     result = request()
             except Exception as exc:
+                error_metadata = dict(event_metadata)
+                error_metadata.update(exception_metadata(exc))
                 if attempt < max_attempts and self._retryable(exc):
                     delay = self.retry_options.delay_for_retry(attempt)
                     self.emit(
@@ -172,7 +176,7 @@ class LLMScheduler:
                             max_attempts=max_attempts,
                             delay=delay,
                             error=_error_message(exc),
-                            metadata=event_metadata,
+                            metadata=error_metadata,
                         )
                     )
                     if delay > 0:
@@ -186,7 +190,7 @@ class LLMScheduler:
                         attempt=attempt,
                         max_attempts=max_attempts,
                         error=_error_message(exc),
-                        metadata=event_metadata,
+                        metadata=error_metadata,
                     )
                 )
                 raise

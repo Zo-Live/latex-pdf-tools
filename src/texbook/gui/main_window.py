@@ -56,6 +56,9 @@ class MainWindow(QMainWindow):
         self._file_menu.addAction(self._exit_action)
 
         self._help_menu = self.menuBar().addMenu("")
+        self._export_log_action = QAction(self)
+        self._export_log_action.triggered.connect(self._export_diagnostic_log)
+        self._help_menu.addAction(self._export_log_action)
         self._about_action = QAction(self)
         self._about_action.triggered.connect(self._show_about_dialog)
         self._help_menu.addAction(self._about_action)
@@ -106,6 +109,7 @@ class MainWindow(QMainWindow):
         self._file_menu.setTitle(self._tr("menu.file"))
         self._exit_action.setText(self._tr("menu.exit"))
         self._help_menu.setTitle(self._tr("menu.help"))
+        self._export_log_action.setText(self._tr("menu.output_log"))
         self._about_action.setText(self._tr("menu.about", app_name=APP_DISPLAY_NAME))
 
     def _track_dialog(self, dialog: QDialog) -> int:
@@ -124,6 +128,11 @@ class MainWindow(QMainWindow):
             preferences=self._display_preferences,
         )
         self._track_dialog(dialog)
+
+    def _export_diagnostic_log(self) -> None:
+        panel = self.centralWidget()
+        if isinstance(panel, ConversionMainPanel):
+            panel.export_diagnostic_log()
 
     def _show_settings_dialog(self) -> None:
         panel = self.centralWidget()
