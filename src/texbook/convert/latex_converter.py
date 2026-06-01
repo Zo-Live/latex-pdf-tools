@@ -223,9 +223,11 @@ class LatexConverter:
     def preamble_lines(self) -> list[str]:
         """Return package and theorem definitions shared by all output modes."""
         font_lines = self._ctex_font_lines()
+        layout_lines = self._page_layout_lines()
         if self.document_class.is_beamer:
             lines = [
                 *font_lines,
+                *layout_lines,
                 r"\usepackage{amsmath}",
                 r"\usepackage{amssymb}",
                 *self._beamer_box_lines(),
@@ -242,6 +244,7 @@ class LatexConverter:
             return lines
         return [
             *font_lines,
+            *layout_lines,
             r"\usepackage{amsmath}",
             r"\usepackage{amsthm}",
             r"\usepackage{amssymb}",
@@ -339,6 +342,14 @@ class LatexConverter:
             r"\providecommand{\songti}{\CJKfamily{zhsong}}",
             r"\providecommand{\heiti}{\CJKfamily{zhhei}}",
             r"\providecommand{\kaishu}{\CJKfamily{zhkai}}",
+        ]
+
+    def _page_layout_lines(self) -> list[str]:
+        if self.document_class.is_beamer:
+            return [r"\setbeamersize{text margin left=1em,text margin right=1em}"]
+        return [
+            r"\setlength{\oddsidemargin}{\dimexpr(\paperwidth-\textwidth)/2-1in\relax}",
+            r"\setlength{\evensidemargin}{\oddsidemargin}",
         ]
 
     def _beamer_box_lines(self) -> list[str]:
