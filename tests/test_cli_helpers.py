@@ -1,5 +1,6 @@
 """Tests for CLI helper behavior."""
 
+import json
 from pathlib import PurePosixPath
 import threading
 from types import SimpleNamespace
@@ -508,6 +509,13 @@ def test_conversion_commands_expose_scheduler_options(command):
         assert "--batch-workers" in options
 
 
+@pytest.mark.parametrize("command", ["extract", "batch"])
+def test_conversion_commands_expose_log_file_option(command):
+    options = _command_option_names(command)
+
+    assert "--log-file" in options
+
+
 def test_presets_cli_adds_and_shows_repository_preset(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_module, "_repo_root", lambda: tmp_path)
 
@@ -546,6 +554,36 @@ def test_extract_cli_reports_conversion_failure_without_traceback(tmp_path, monk
     assert "Traceback" not in result.output
     assert "bad.pdf" in result.output
     assert "unsupported or damaged" in result.output
+
+
+def test_extract_cli_writes_diagnostic_log_file(tmp_path, monkeypatch):
+    source = tmp_path / "sample.pdf"
+    source.write_bytes(b"pdf")
+    output = tmp_path / "out.tex"
+    log_file = tmp_path / "logs" / "extract.jsonl"
+
+    class LoggingConverter:
+        def convert(self, pdf_path, *, pages=None):
+            return SimpleNamespace(latex=f"% converted {pdf_path.name}", notes=["note"])
+
+    monkeypatch.setattr(cli_module, "_build_converter", lambda **kwargs: LoggingConverter())
+
+    result = runner.invoke(
+        app,
+        ["extract", str(source), "-o", str(output), "--log-file", str(log_file)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert log_file.exists()
+    events = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+    assert [event["kind"] for event in events] == [
+        "log_file_started",
+        "command_started",
+        "write_completed",
+        "command_completed",
+    ]
+    assert events[2]["path"] == str(output)
+    assert events[3]["output_kind"] == "tex_file"
 
 
 def test_extract_project_writes_project_files_and_entrypoint(tmp_path, monkeypatch):
@@ -944,6 +982,42 @@ def test_batch_workers_process_files_concurrently(tmp_path, monkeypatch):
     assert sorted(calls) == ["a.pdf", "b.pdf"]
     assert (output_dir / "a.tex").exists()
     assert (output_dir / "b.tex").exists()
+
+
+def test_batch_cli_writes_thread_safe_diagnostic_log(tmp_path, monkeypatch):
+    input_dir = tmp_path / "docs"
+    input_dir.mkdir()
+    (input_dir / "a.pdf").write_bytes(b"a")
+    (input_dir / "b.pdf").write_bytes(b"b")
+    output_dir = tmp_path / "out"
+    log_file = tmp_path / "logs" / "batch.jsonl"
+
+    class LoggingConverter:
+        def convert(self, pdf_path, *, pages=None):
+            return SimpleNamespace(latex=f"% converted {pdf_path.name}", notes=[])
+
+    monkeypatch.setattr(cli_module, "_build_converter", lambda **kwargs: LoggingConverter())
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            str(input_dir),
+            "-o",
+            str(output_dir),
+            "--batch-workers",
+            "2",
+            "--log-file",
+            str(log_file),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    events = [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+    assert events[0]["kind"] == "log_file_started"
+    assert any(event["kind"] == "write_completed" and event["pdf"] == "a.pdf" for event in events)
+    assert any(event["kind"] == "write_completed" and event["pdf"] == "b.pdf" for event in events)
+    assert any(event["kind"] == "command_completed" and event["success"] is True for event in events)
 
 
 def test_batch_rejects_duplicate_output_targets_before_conversion(tmp_path, monkeypatch):

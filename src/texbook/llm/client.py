@@ -7,6 +7,7 @@ from typing import Any, Mapping, Sequence
 
 import httpx
 
+from ..diagnostics import truncate_preview
 from ..latex_text import normalize_latex_fragment_newlines
 from ..document_class import (
     DocumentClassResult,
@@ -28,6 +29,10 @@ from .presets import PromptPreset
 
 class LLMResponseError(RuntimeError):
     """Raised when the LLM response cannot be used."""
+
+    def __init__(self, message: str, *, raw_preview: str = "") -> None:
+        super().__init__(message)
+        self.raw_preview = raw_preview
 
 
 @dataclass
@@ -288,10 +293,23 @@ class OpenAICompatibleClient:
 
 def parse_chunk_response(raw_content: str) -> LLMChunkResult:
     """Parse the expected JSON object from an LLM response."""
-    data = _load_json_object(_strip_code_fence(raw_content))
+    stripped, fence_language = _strip_code_fence_with_language(raw_content)
+    if fence_language in {"latex", "tex"}:
+        return _recover_latex_chunk(stripped, raw_content)
+
+    try:
+        data = _load_json_object(stripped, raw_content=raw_content)
+    except LLMResponseError:
+        if _looks_like_latex_fragment(stripped):
+            return _recover_latex_chunk(stripped, raw_content)
+        raise
+
     latex = data.get("latex")
     if not isinstance(latex, str) or not latex.strip():
-        raise LLMResponseError("LLM response JSON must contain a non-empty latex field.")
+        raise _response_error(
+            "LLM response JSON must contain a non-empty latex field.",
+            raw_content,
+        )
 
     notes_value = data.get("notes", [])
     if notes_value is None:
@@ -309,11 +327,12 @@ def parse_chunk_response(raw_content: str) -> LLMChunkResult:
 
 def parse_document_class_response(raw_content: str) -> LLMDocumentClassResult:
     """Parse the expected JSON object from an LLM document-class response."""
-    data = _load_json_object(_strip_code_fence(raw_content))
+    data = _load_json_object(_strip_code_fence(raw_content), raw_content=raw_content)
     document_class = data.get("document_class")
     if not isinstance(document_class, str) or not document_class.strip():
-        raise LLMResponseError(
-            "LLM document-class JSON must contain a non-empty document_class field."
+        raise _response_error(
+            "LLM document-class JSON must contain a non-empty document_class field.",
+            raw_content,
         )
 
     notes_value = data.get("notes", [])
@@ -339,30 +358,37 @@ def parse_document_class_response(raw_content: str) -> LLMDocumentClassResult:
     try:
         result.normalized()
     except ValueError as exc:
-        raise LLMResponseError(str(exc)) from exc
+        raise _response_error(str(exc), raw_content) from exc
     return result
 
 
 def parse_title_response(raw_content: str) -> str:
     """Parse the expected JSON object from an LLM title response."""
-    data = _load_json_object(_strip_code_fence(raw_content))
+    data = _load_json_object(_strip_code_fence(raw_content), raw_content=raw_content)
     title = data.get("title")
     if not isinstance(title, str) or not title.strip():
-        raise LLMResponseError("LLM response JSON must contain a non-empty title field.")
+        raise _response_error(
+            "LLM response JSON must contain a non-empty title field.",
+            raw_content,
+        )
 
     normalized = _normalize_response_title(title)
     if not normalized:
-        raise LLMResponseError("LLM response JSON must contain a non-empty title field.")
+        raise _response_error(
+            "LLM response JSON must contain a non-empty title field.",
+            raw_content,
+        )
     return normalized
 
 
 def parse_structure_plan_response(raw_content: str) -> LLMStructurePlanResult:
     """Parse the expected JSON object from an LLM structure-planning response."""
-    data = _load_json_object(_strip_code_fence(raw_content))
+    data = _load_json_object(_strip_code_fence(raw_content), raw_content=raw_content)
     status = str(data.get("status", "")).strip().lower()
     if status not in {"complete", "need_more", "insufficient"}:
-        raise LLMResponseError(
-            "LLM structure JSON must contain status complete, need_more, or insufficient."
+        raise _response_error(
+            "LLM structure JSON must contain status complete, need_more, or insufficient.",
+            raw_content,
         )
 
     plan_value = data.get("plan", [])
@@ -375,7 +401,7 @@ def parse_structure_plan_response(raw_content: str) -> LLMStructurePlanResult:
             if isinstance(item, Mapping)
         ]
     else:
-        raise LLMResponseError("LLM structure JSON plan must be a list.")
+        raise _response_error("LLM structure JSON plan must be a list.", raw_content)
 
     needed_value = data.get("needed_pages", [])
     needed_pages: list[int] = []
@@ -415,19 +441,25 @@ def parse_structure_plan_response(raw_content: str) -> LLMStructurePlanResult:
 
 
 def _strip_code_fence(text: str) -> str:
+    return _strip_code_fence_with_language(text)[0]
+
+
+def _strip_code_fence_with_language(text: str) -> tuple[str, str]:
     stripped = text.strip()
     if not stripped.startswith("```"):
-        return stripped
+        return stripped, ""
 
     lines = stripped.splitlines()
+    language = ""
     if lines and lines[0].startswith("```"):
+        language = lines[0][3:].strip().lower()
         lines = lines[1:]
     if lines and lines[-1].strip() == "```":
         lines = lines[:-1]
-    return "\n".join(lines).strip()
+    return "\n".join(lines).strip(), language
 
 
-def _load_json_object(text: str) -> Mapping[str, Any]:
+def _load_json_object(text: str, *, raw_content: str | None = None) -> Mapping[str, Any]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -436,19 +468,70 @@ def _load_json_object(text: str) -> Mapping[str, Any]:
             start = text.find("{")
             end = text.rfind("}")
             if start < 0 or end <= start:
-                raise LLMResponseError("LLM response is not valid JSON.") from None
+                raise _response_error(
+                    "LLM response is not valid JSON.",
+                    raw_content or text,
+                ) from None
             try:
                 data = json.loads(text[start : end + 1])
             except json.JSONDecodeError as exc:
-                raise LLMResponseError("LLM response is not valid JSON.") from exc
+                raise _response_error(
+                    "LLM response is not valid JSON.",
+                    raw_content or text,
+                ) from exc
 
     if not isinstance(data, dict):
-        raise LLMResponseError("LLM response JSON must be an object.")
+        raise _response_error("LLM response JSON must be an object.", raw_content or text)
     if _latex_has_json_escape_damage(data.get("latex")):
         loose_data = _load_loose_json_object(text)
         if loose_data is not None:
             return loose_data
     return data
+
+
+def _recover_latex_chunk(text: str, raw_content: str) -> LLMChunkResult:
+    latex = text.strip()
+    if not latex:
+        raise _response_error(
+            "LLM response JSON must contain a non-empty latex field.",
+            raw_content,
+        )
+    return LLMChunkResult(
+        latex=normalize_latex_fragment_newlines(latex),
+        notes=[],
+    )
+
+
+def _looks_like_latex_fragment(text: str) -> bool:
+    line = _first_content_line(text)
+    if not line:
+        return False
+    if line.startswith("\\"):
+        return True
+    if line.startswith(("$$", r"\[", r"\(")):
+        return True
+    if line.startswith("$") and line.count("$") >= 2:
+        return True
+    if line.startswith("% TODO:"):
+        return True
+    if line.startswith("%"):
+        return any(
+            candidate.lstrip().startswith("\\")
+            for candidate in text.splitlines()[1:4]
+        )
+    return False
+
+
+def _first_content_line(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def _response_error(message: str, raw_content: str) -> LLMResponseError:
+    return LLMResponseError(message, raw_preview=truncate_preview(raw_content))
 
 
 def _normalize_response_title(title: str) -> str:
