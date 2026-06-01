@@ -811,7 +811,16 @@ class LLMPdfConverter:
             if llm_plan is not None:
                 return llm_plan
             if options.mode == StructureMode.llm:
-                raise ValueError("LLM did not return a usable structure plan.")
+                fallback_plan = build_chunk_fallback_plan(
+                    _chunk_page_numbers(selected_pages, self.chunk_pages),
+                    note="LLM 未返回有效结构规划，已回退到按 chunk 划分章节文件。",
+                )
+                if cache_run is not None:
+                    cache_run.write_local_plan(
+                        fallback_plan,
+                        filename="structure-fallback.json",
+                    )
+                return fallback_plan
 
         local_plan = build_local_heading_plan(evidence)
         if local_plan is not None and options.mode == StructureMode.local:
@@ -899,14 +908,17 @@ class LLMPdfConverter:
 
             last_result = result
             if result.status == "complete":
-                plan = normalize_llm_structure_plan(
-                    items=result.plan,
-                    source=StructurePlanSource.llm_toc,
-                    confidence=result.confidence,
-                    selected_pages=selected_pages,
-                    inspected_pages=inspected_pages,
-                    notes=[*result.notes, result.reason],
-                )
+                try:
+                    plan = normalize_llm_structure_plan(
+                        items=result.plan,
+                        source=StructurePlanSource.llm_toc,
+                        confidence=result.confidence,
+                        selected_pages=selected_pages,
+                        inspected_pages=inspected_pages,
+                        notes=[*result.notes, result.reason],
+                    )
+                except ValueError:
+                    break
                 if cache_run is not None:
                     cache_run.write(
                         stage="toc",
@@ -981,14 +993,17 @@ class LLMPdfConverter:
                 return None
             return None
 
-        plan = normalize_llm_structure_plan(
-            items=heading_result.plan,
-            source=StructurePlanSource.llm_headings,
-            confidence=heading_result.confidence,
-            selected_pages=selected_pages,
-            inspected_pages=inspected_pages,
-            notes=[*heading_result.notes, heading_result.reason],
-        )
+        try:
+            plan = normalize_llm_structure_plan(
+                items=heading_result.plan,
+                source=StructurePlanSource.llm_headings,
+                confidence=heading_result.confidence,
+                selected_pages=selected_pages,
+                inspected_pages=inspected_pages,
+                notes=[*heading_result.notes, heading_result.reason],
+            )
+        except ValueError:
+            return None
         if cache_run is not None:
             cache_run.write(
                 stage="headings",
